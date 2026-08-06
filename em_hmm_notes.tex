@@ -4,6 +4,7 @@
 \usepackage{amsmath, amssymb, amsthm, mathtools}
 \usepackage{booktabs}
 \usepackage{enumitem}
+\usepackage{natbib}
 \usepackage{hyperref}
 \hypersetup{colorlinks=true, linkcolor=blue, citecolor=blue, urlcolor=blue}
 
@@ -27,8 +28,9 @@
 
 \begin{abstract}
 \noindent
-These notes derive the forward-backward algorithm and EM (Baum-Welch) for
-hidden Markov models directly, by maximum likelihood. This is the machinery
+These notes derive the forward-backward algorithm and EM (Baum-Welch)
+\citep{baum1970maximization} for hidden Markov models directly, by
+maximum likelihood. This is the machinery
 underneath every \texttt{.fit(method="em")} call in this afternoon's coding
 tutorial --- today we derive what that call is actually doing, down to the
 weighted linear regression at the heart of the tutorial's AR-HMM M-step.
@@ -58,9 +60,9 @@ with three parameter groups $\Theta = (\pi_0, P, \{\theta_k\}_{k=1}^K)$:
   \item \textbf{Transition matrix:} $P \in [0,1]^{K\times K}$
     (row-stochastic), $P_{ij} = p(z_{t+1}{=}j \mid z_t{=}i)$.
   \item \textbf{Emissions:} $x_t \sim p(\cdot \mid \theta_{z_t})$ ---
-    e.g. Gaussian, Poisson, or, for this afternoon's tutorial, an
-    \emph{autoregressive} Gaussian, $x_t \mid z_t{=}k, x_{t-1} \sim
-    \N(A_k x_{t-1} + b_k,\, Q_k)$.
+    e.g. Gaussian, Poisson, or, as in the MoSeq model~\citep{wiltschko2015mapping} and this afternoon's tutorial, an
+    \emph{autoregressive} Gaussian , $p(x_t \mid \theta_k) =
+    \N(x_t \mid A_k x_{t-1} + b_k,\, Q_k)$, where $\theta_k = (A_k, b_k, Q_k)$.
 \end{enumerate}
 We want the \textbf{maximum likelihood estimate} of $\Theta$: the parameters
 that make the observed data $x_{1:T}$ most probable, marginalizing over
@@ -77,7 +79,7 @@ steps, let alone to differentiate for gradient ascent. \textbf{EM} sidesteps
 this by exploiting the Markov structure of \eqref{eq:hmm-joint}: it turns
 out we only ever need two low-dimensional summaries of the posterior over
 paths, not the whole $K^T$-entry table, and those summaries can be computed
-by the \textbf{forward-backward algorithm} in $O(TK^2)$ time. That's the
+by the \textbf{forward-backward algorithm} \citep{rabiner1986introduction} in time that is \textit{linear} in the length of the sequence, $T$. That's the
 plan for the rest of these notes: derive EM in general, including the
 M-step for a simple Gaussian emission model (Section~2), then derive
 forward-backward as the way to compute the summaries EM's E-step needs
@@ -89,7 +91,21 @@ as an exercise at the end of Section~2.
 \section{The EM Algorithm}
 % =============================================================================
 
-\subsection{Jensen's inequality and the ELBO}
+\subsection{The Evidence Lower Bound (ELBO)}
+
+Let's start by expanding the objective --- the marginal log likelihood --- and applying 
+one of the oldest tricks in the book, multiplying by one. 
+Introduce an \textbf{auxiliary distribution} $q(z_{1:T})$ over the whole
+hidden path --- for now, completely arbitrary, with the same support as the
+true posterior. Multiply and divide by $q$ inside the sum in
+\eqref{eq:mle}:
+\begin{align}
+\log p(x_{1:T}; \Theta) 
+&= \log \sum_{z_{1:T}} p(z_{1:T}, x_{1:T}; \Theta) \nonumber \\
+&= \log \sum_{z_{1:T}} q(z_{1:T}) \, \frac{p(z_{1:T}, x_{1:T}; \Theta)}{q(z_{1:T})} \nonumber  \\
+&= \log \E_q\!\left[\frac{p(z_{1:T}, x_{1:T}; \Theta)}{q(z_{1:T})}\right] \label{eq:obj_q}
+\end{align}
+Now that we've written the objective as the log of an expectation, we can apply \textbf{Jensen's inequality}.
 
 \begin{lemma*}[Jensen's inequality]
 For any concave function $f$ and random variable $Y$,
@@ -98,26 +114,20 @@ linear). Since $\log$ is concave, $\log \E[g] \geq \E[\log g]$ for any
 positive random variable $g$.
 \end{lemma*}
 
-Introduce an \textbf{auxiliary distribution} $q(z_{1:T})$ over the whole
-hidden path --- for now, completely arbitrary, with the same support as the
-true posterior. Multiply and divide by $q$ inside the sum in
-\eqref{eq:mle}, then apply Jensen's inequality:
+Applying Jensen's inequality to \eqref{eq:obj_q}, we obtain
 \begin{align}
 \log p(x_{1:T}; \Theta) 
-&= \log \sum_{z_{1:T}} p(z_{1:T}, x_{1:T}; \Theta) \nonumber \\
-&= \log \sum_{z_{1:T}} q(z_{1:T}) \, \frac{p(z_{1:T}, x_{1:T}; \Theta)}{q(z_{1:T})} \nonumber  \\
-&= \log \E_q\!\left[\frac{p(z_{1:T}, x_{1:T}; \Theta)}{q(z_{1:T})}\right] \notag \\
-&\geq \E_q\Bigl[\log p(z_{1:T}, x_{1:T}; \Theta) - \log q(z_{1:T})\Bigr] \nonumber \\
-&\triangleq \mathcal{L}(\Theta, q).
+  &\geq \E_q\Bigl[\log p(z_{1:T}, x_{1:T}; \Theta) - \log q(z_{1:T})\Bigr] 
+\triangleq \mathcal{L}(\Theta, q).
 \label{eq:elbo-def}
 \end{align}
 $\mathcal{L}(\Theta,q)$ is the \textbf{evidence lower bound (ELBO)}. It holds
-for \emph{any} $q$, so we've replaced one hard problem, maximizing
-$\log p(x_{1:T};\Theta)$ over $\Theta$, with an easier joint problem:
+for \emph{any} $q$, so we've replaced the hard problem of maximizing
+$\log p(x_{1:T};\Theta)$ with a potentially easier problem:
 maximize $\mathcal{L}(\Theta,q)$ over $(\Theta, q)$ by coordinate ascent.
-That coordinate ascent is EM --- E-step optimizes $q$, M-step optimizes
-$\Theta$ --- and it is preferable to direct gradient ascent on
-\eqref{eq:mle} because, as we'll see, each coordinate update has a simple,
+That coordinate ascent is EM --- the E-step optimizes $q$ and the M-step optimizes
+$\Theta$ --- and it can be preferable to direct gradient ascent on
+\eqref{eq:mle} because, as we'll see, each coordinate update often has a simple,
 closed form.
 
 \subsection{The E-step}
@@ -166,8 +176,8 @@ Let's consider a simple case where the emission model is Gaussian with mean $\th
 The ELBO as a function of $\theta_k$ is
 \begin{align}
   \mathcal{L}(\Theta, q) &=
-  \sum_{t=1}^T \gamma_t(k) \log \N(x_t \mid \theta_k, \sigma^2 I) \\
-  &= \sum_{t=1}^T \gamma_t(k) \left( -\frac{1}{2\sigma^2} (x_t - \theta_k)^\top (x_t - \theta_k)\right).
+  \sum_{t=1}^T \gamma_t(k) \log \N(x_t \mid \theta_k, \sigma^2 I) + \mathrm{c} \\
+  &= \sum_{t=1}^T \gamma_t(k) \left( -\frac{1}{2\sigma^2} (x_t - \theta_k)^\top (x_t - \theta_k)\right) + \mathrm{c}.
 \end{align}
 It's a little bit of calculus to show that this objective is maximized at
 \begin{align}
@@ -222,46 +232,35 @@ efficiently is the following factorization.
 \begin{equation}
 p(z_t{=}k \mid x_{1:T}) \;\propto\;
 \underbrace{p(z_t{=}k \mid x_{1:t-1})}_{\triangleq\ \alpha_t(k)}
-\;\; p(x_t \mid z_t{=}k) \;\;
-\underbrace{p(x_{t+1:T} \mid z_t{=}k)}_{\triangleq\ \beta_t(k)}.
+\;\;
+\underbrace{p(x_{t:T} \mid z_t{=}k)}_{\triangleq\ \beta_t(k)}.
 \label{eq:gamma-factorization}
 \end{equation}
 
-\begin{proof}[Proof, by two applications of Bayes' rule]
-Split $x_{1:T} = (x_{1:t-1}, x_t, x_{t+1:T})$
-and apply Bayes' rule twice, each time treating one more block of
-observations as newly-arrived evidence. Conditioning on $x_{t+1:T}$
-last,
+\begin{proof}[Proof, by one application of Bayes' rule]
+Split $x_{1:T} = (x_{1:t-1}, x_{t:T})$ and apply Bayes' rule, treating
+$x_{t:T}$ as newly-arrived evidence added to $x_{1:t-1}$:
 \[
-p(z_t{=}k \mid x_{1:t-1}, x_t, x_{t+1:T})
-\;\propto\; p(x_{t+1:T} \mid z_t{=}k, x_{1:t-1}, x_t) \;
-p(z_t{=}k \mid x_{1:t-1}, x_t).
+p(z_t{=}k \mid x_{1:t-1}, x_{t:T})
+\;\propto\; p(x_{t:T} \mid z_t{=}k, x_{1:t-1}) \;
+p(z_t{=}k \mid x_{1:t-1}).
 \]
-In an HMM, once we know $z_t$, everything that happens afterward is
+In an HMM, once we know $z_t$, everything that happens from $t$ onward is
 independent of everything that happened before --- the defining Markov
-property --- so $p(x_{t+1:T} \mid z_t{=}k, x_{1:t-1}, x_t) =
-p(x_{t+1:T}\mid z_t{=}k) = \beta_t(k)$. Applying Bayes' rule once more to
-the remaining factor, now splitting off $x_t$,
-\[
-p(z_t{=}k \mid x_{1:t-1}, x_t) \;\propto\;
-p(x_t \mid z_t{=}k, x_{1:t-1}) \; p(z_t{=}k \mid x_{1:t-1}).
-\]
-Since $x_t$ depends only on $z_t$, $p(x_t \mid z_t{=}k, x_{1:t-1}) =
-p(x_t\mid z_t{=}k)$, and $p(z_t{=}k\mid x_{1:t-1}) = \alpha_t(k)$ by
-definition. Multiplying the pieces back together gives
-\eqref{eq:gamma-factorization}.
+property --- so $p(x_{t:T} \mid z_t{=}k, x_{1:t-1}) = p(x_{t:T}\mid
+z_t{=}k) = \beta_t(k)$, and $p(z_t{=}k\mid x_{1:t-1}) = \alpha_t(k)$ by
+definition. Multiplying the two together gives \eqref{eq:gamma-factorization}.
 \end{proof}
 
 So the whole problem reduces to computing two quantities recursively: the
 \textbf{forward message} $\alpha_t(k) \triangleq p(z_t{=}k\mid x_{1:t-1})$
-and the \textbf{backward message} $\beta_t(k) \triangleq p(x_{t+1:T}\mid
+and the \textbf{backward message} $\beta_t(k) \triangleq p(x_{t:T}\mid
 z_t{=}k)$.
 
 \subsection{The forward algorithm}
 
-\textbf{Claim:} $\displaystyle \alpha_{t+1}(j) = \frac{1}{C_t}\sum_{k=1}^K
-P_{kj}\, \alpha_t(k)\, p(x_t\mid z_t{=}k)$, where $C_t \triangleq
-p(x_t\mid x_{1:t-1}) = \sum_k \alpha_t(k)\, p(x_t\mid z_t{=}k)$.
+\textbf{Claim:} Let $\alpha_1(k) = p(z_1=k) = \pi_{0,k}$. Then, for $t=1,\ldots,T-1$, the forward messages can be computed recursively as, $\displaystyle \alpha_{t+1}(j) = \frac{1}{C_t}\sum_{k=1}^K
+P_{kj}\, \alpha_t(k)\, p(x_t\mid z_t{=}k)$, where $C_t \triangleq \sum_k \alpha_t(k)\, p(x_t\mid z_t{=}k)$.
 
 \begin{proof}[Proof, by induction on $t$]
 \textit{Base case:} $\alpha_1(k) = p(z_1{=}k\mid x_{1:0}) = p(z_1{=}k) =
@@ -292,13 +291,24 @@ recursion
 \qquad C_t = \alpha_{t}^\top \ell_{t},
 \label{eq:forward-recursion}
 \end{equation}
-costing $O(K^2)$ per step ($O(TK^2)$ total, versus $O(K^T)$ for naive
-enumeration). Notice normalization wasn't an afterthought bolted on for
-numerical stability --- it fell straight out of the derivation, because
-$\alpha_t$ is a genuine conditional distribution (Bayes' rule) rather than
-an unnormalized joint probability. As a bonus, $C_t = p(x_t\mid
-x_{1:t-1})$ is exactly the one-step-ahead predictive likelihood, so by
-the chain rule we get the \textbf{marginal log-likelihood for free}:
+where $\odot$ denotes elementwise vector multiplication.
+
+\paragraph{Exercise: Complexity Analysis}
+Recall that the naive complexity of computing the marginal likelihood was $O(K^T)$. 
+What is the computational complexity of the forward pass?
+
+\paragraph{Normalization}
+Notice that $\alpha_t$ is a conditional distribution of $z_t$, 
+so the forward messages are always normalized to be non-negative and sum to one.
+This is helpful for numerical stability, and it's a point we'll return to in the 
+backward pass. 
+
+\paragraph{Exercise: Marginal log likelihood}
+Show that 
+\begin{align}
+  C_t = p(x_t\mid x_{1:t-1})
+\end{align} is exactly the one-step-ahead predictive likelihood, so by
+the chain rule we get the marginal log-likelihood for free:
 \begin{equation}
 \log p(x_{1:T}) = \sum_{t=1}^T \log C_t.
 \label{eq:marginal-lik-hmm}
@@ -307,34 +317,44 @@ This is the quantity we track as ``the log-likelihood'' during EM.
 
 \subsection{The backward algorithm}
 
-\textbf{Claim:} $\displaystyle \beta_t(k) = \sum_{j=1}^K P_{kj}\,
-p(x_{t+1}\mid z_{t+1}{=}j)\, \beta_{t+1}(j)$.
+\textbf{Claim:} Let $\beta_T(k) = p(x_T \mid z_T=k)$. Then the backward messages can be computed recursively as, $\displaystyle \beta_t(k) = p(x_t \mid z_t{=}k)
+\sum_{j=1}^K P_{kj}\, \beta_{t+1}(j)$.
 
 \begin{proof}[Proof, by induction on $t$, downward from $T$]
-\textit{Base case:} $\beta_T(k) = p(x_{T+1:T}\mid z_T{=}k) = 1$, since
-the ``future after $T$'' is the empty sequence of observations, which is
-certain.
+\textit{Base case:} $\beta_T(k) = p(x_T \mid z_T{=}k)$ --- just the
+likelihood of the final observation.
 
 \textit{Inductive step:} suppose $\beta_{t+1}(j)$ is known for every $j$.
-Introduce $z_{t+1}$ by marginalizing,
+First, peel off $x_t$: since $x_t$ depends only on $z_t$, it's independent
+of everything else once we condition on $z_t$,
 \[
-\beta_t(k) = p(x_{t+1}, x_{t+2:T}\mid z_t{=}k)
-= \sum_j p(z_{t+1}{=}j\mid z_t{=}k)\, p(x_{t+1}\mid z_{t+1}{=}j, z_t{=}k)\,
-p(x_{t+2:T}\mid z_{t+1}{=}j, z_t{=}k, x_{t+1}).
+\beta_t(k) = p(x_t, x_{t+1:T} \mid z_t{=}k)
+= p(x_t \mid z_t{=}k)\, p(x_{t+1:T} \mid z_t{=}k).
 \]
-By the Markov property, both $x_{t+1}$ and $x_{t+2:T}$ depend on $z_t$
-only through $z_{t+1}$, so this reduces to $\sum_j P_{kj}\,
-p(x_{t+1}\mid z_{t+1}{=}j)\, \beta_{t+1}(j)$. \qedhere
+Then introduce $z_{t+1}$ by marginalizing: by the law of total probability
+and the Markov property (the future depends on $z_t$ only through
+$z_{t+1}$),
+\[
+p(x_{t+1:T} \mid z_t{=}k)
+= \sum_{j=1}^K p(z_{t+1}{=}j \mid z_t{=}k)\, p(x_{t+1:T}\mid z_{t+1}{=}j)
+= \sum_{j=1}^K P_{kj}\, \beta_{t+1}(j).
+\]
+Multiplying the two pieces back together,
+\[
+\beta_t(k) = p(x_t\mid z_t{=}k) \sum_{j=1}^K P_{kj}\,\beta_{t+1}(j). \qedhere
+\]
 \end{proof}
 
-In matrix form, $\beta_t = P(\beta_{t+1}\odot\ell_{t+1})$. The
-backward pass runs from $t=T$ down to $t=1$, the mirror image of the
-forward pass.
+In matrix form, $\beta_t = \ell_t \odot (P\beta_{t+1})$ --- note the order:
+matrix-multiply by $P$ first, \emph{then} weight by the current-step
+likelihood $\ell_t$, the mirror image of the forward recursion's ``weight,
+then matrix-multiply'' order. The backward pass runs from $t=T$ down to
+$t=1$.
 
 \textbf{A note on normalization.} Unlike $\alpha_t$, $\beta_t$ is not a
-normalized distribution over $k$ --- it's a product of $T-t$ likelihood
+normalized distribution over $k$ --- it's a product of $T-t+1$ likelihood
 terms, so it can just as easily underflow for large $T$. But we're free to
-rescale it: since $\gamma_t(k) \propto \alpha_t(k)\,\ell_{t,k}\,\beta_t(k)$
+rescale it: since $\gamma_t(k) \propto \alpha_t(k)\,\beta_t(k)$
 only needs $\beta_t(k)$ up to an overall constant, one that doesn't depend
 on $k$, we can renormalize $\beta_t(\cdot)$ by any convenient constant
 $B_t$ at every step of the recursion --- e.g.\ $\beta_t(k) \leftarrow
@@ -349,7 +369,7 @@ One forward pass and one backward pass give $\alpha_t(k)$ and $\beta_t(k)$
 for every $t$, and hence, via \eqref{eq:gamma-factorization}, the posterior
 marginal
 \begin{equation}
-\gamma_t(k) = p(z_t{=}k \mid x_{1:T}) \;\propto\; \alpha_t(k)\, \ell_{t,k}\, \beta_t(k).
+\gamma_t(k) = p(z_t{=}k \mid x_{1:T}) \;\propto\; \alpha_t(k)\, \beta_t(k).
 \label{eq:posterior-marginal}
 \end{equation}
 This is the \textbf{E-step}, computed in $O(TK^2)$ time, without ever
@@ -362,30 +382,14 @@ of \eqref{eq:gamma-factorization} --- but now keeping \emph{both} $z_t$ and
 $z_{t+1}$ fixed, rather than marginalizing the transition between them ---
 show that
 \[
-\xi_t(i,j) \;\propto\; \alpha_t(i)\, \ell_{t,i}\, P_{ij}\, \ell_{t+1,j}\, \beta_{t+1}(j)
+\xi_t(i,j) \;\propto\; \alpha_t(i)\, \ell_{t,i}\, P_{ij}\, \beta_{t+1}(j)
 \]
-(normalize over $i,j$ to get an honest probability). This is exactly the
-weight $\hat P_{ij} \propto \sum_{t=1}^{T-1} \xi_t(i,j)$ needs in the
-transition-matrix M-step.
+(normalize over $i,j$ to get a probability). This
+is exactly the weight $\hat P_{ij} \propto \sum_{t=1}^{T-1} \xi_t(i,j)$
+needs in the transition-matrix M-step.
 
 
-\begin{thebibliography}{9}
-\bibitem{baum1970maximization}
-L.~E. Baum, T.~Petrie, G.~Soules, and N.~Weiss.
-A maximization technique occurring in the statistical analysis of
-probabilistic functions of Markov chains.
-\emph{The Annals of Mathematical Statistics}, 41(1):164--171, 1970.
-
-\bibitem{rabiner1986introduction}
-L.~R. Rabiner and B.~H. Juang.
-An introduction to hidden Markov models.
-\emph{IEEE ASSP Magazine}, 3(1):4--16, 1986.
-
-\bibitem{wiltschko2015mapping}
-A.~B. Wiltschko, M.~J. Johnson, G.~Iurilli, R.~E. Peterson, J.~M. Katon,
-S.~L. Pashkovski, V.~E. Abraira, R.~P. Adams, and S.~R. Datta.
-Mapping sub-second structure in mouse behavior.
-\emph{Neuron}, 88(6):1121--1135, 2015.
-\end{thebibliography}
+\bibliographystyle{plainnat}
+\bibliography{em_hmm_notes}
 
 \end{document}
